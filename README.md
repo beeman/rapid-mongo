@@ -134,9 +134,9 @@ disable these options entirely then set `--dbpath` or `--port` to `false`.
 
 Set `arch` to override the detected architecture, options: `ia32` or `x64`.
 
-### platorm
+### platform
 
-Set `platorm` to override the detected platform, options: `win32`, `darwin`,
+Set `platform` to override the detected platform, options: `win32`, `darwin`,
 `osx`, `linux` or `elementary OS`.
 
 ### httpOpts
@@ -172,6 +172,30 @@ Example:
 rapid.start().then(function (port) {
 	console.log("Mongo is running on 127.0.0.1:"+port);
 }).catch(console.error);
+```
+
+## stop()
+
+Stop can be used to programaticly end the mongodb process.  The method returns
+a Promise which is resolved with the exit code of the process.
+
+Example:
+
+```javascript
+var RapidMongo = require('./index')
+var rapid = new RapidMongo()
+
+rapid.start()
+  .then((port) => {
+    console.log(`Mongo is running on 127.0.0.1:${port}`)
+    setTimeout(() => {
+      console.log('Stopping mongod')
+      rapid
+        .stop()
+        .then((res) => console.log('mongod stopped with code', res))
+    }, 5000)
+  })
+  .catch(console.error)
 ```
 
 After successful installation, the mongo archive will automatically be removed.

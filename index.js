@@ -9,7 +9,7 @@ var _ = require("lodash"),
 	findPort = Promise.promisify(require("find-free-port")),
 	Decompress = Promise.promisifyAll(require("decompress")),
 	readline = require('readline'),
-	EventEmitter = require('events'),
+	EventEmitter = require('events').EventEmitter,
 	util = require('util'),
 	spawn = require('child_process').spawn,
 	DOWNLOAD_URI = "https://fastdl.mongodb.org";
@@ -160,8 +160,8 @@ RapidMango.prototype.download = function download() {
 		dl_uri += "/" + name;
 		self.emit("verbose", "Downloading: %s", dl_uri);
 
-		var temp_dir = self.options.downloadDir || os.tmpdir(),
-			downloadDir = path.resolve(temp_dir, 'mongodb-download');
+		var temp_dir = self.options.downloadDir || path.resolve(os.tmpdir(), 'mongodb-download'),
+			downloadDir = path.resolve(temp_dir);
 
 		return fs.mkdirpAsync(downloadDir).then(function () {
 			return new Promise(function (resolve, reject) {
@@ -221,7 +221,7 @@ RapidMango.prototype.download = function download() {
 				});
 			});
 		});
-	});
+	}).bind(this);
 };
 
 function RapidMango(options) {
@@ -239,16 +239,41 @@ function RapidMango(options) {
 	options.mongodBin = path.resolve(options.installPath, "bin", "mongod" +
 		(process.platform === "win32" ? ".exe" : ""));
 	this.options = options;
+	this.child = null;
 	return this;
 }
 
 util.inherits(RapidMango, EventEmitter);
 
 RapidMango.prototype.install = function install() {
-	var self = this;
+	var self = this,
+		fileExists;
 	self.emit("verbose", "Checking for mongod binary: " +
 			  self.options.mongodBin);
-	return fs.accessAsync(self.options.mongodBin, fs.F_OK).catch(function (err) {
+	if (fs.accessAsync) {
+		self.emit("debug", "using fs.access");
+		fileExists = fs.accessAsync(self.options.mongodBin, fs.F_OK);
+	} else if (fs.statAsync) {
+		self.emit("debug", "using fs.stat");
+		fileExists = fs.statAsync(self.options.mongodBin).then(function (stat) {
+			self.emit("debug", stat);
+		});
+	} else if (fs.exists) {
+		self.emit("debug", "using fs.exists");
+		fileExists = new Promise(function (resolve, reject) {
+			fs.exists(function (exists) {
+				if (exists) {
+					resolve();
+				} else {
+					reject(new Error("File does not exist"));
+				}
+			});
+		});
+	} else {
+		return Promise.reject(new Error("Can't find file exists type method, downloading anyway..."));
+	}
+	return fileExists.catch(function (err) {
+		self.emit("debug", err);
 		return Promise.all([
 			self.download(),
 			fs.mkdirpAsync(path.resolve(self.options.installPath))
@@ -272,10 +297,8 @@ RapidMango.prototype.install = function install() {
 				return fs.unlinkAsync(archiveFilename);
 			});
 		});
-	});
+	}).bind(this);
 };
-
-var child = null;
 
 RapidMango.prototype.start = function start() {
 	var self = this;
@@ -302,21 +325,21 @@ RapidMango.prototype.start = function start() {
 		});
 		var promise = new Promise(function (resolve, reject) {
 			self.emit("debug", "spawning: ", self.options.mongodBin, args);
-			child = spawn(self.options.mongodBin, args, {
+			self.child = spawn(self.options.mongodBin, args, {
 				stdio: 'pipe'
 			});
-			child.on('error', function (code, signal) {
+			self.child.on('error', function (code, signal) {
 				if (promise.isPending)
 					reject(new Error("Failed to start mongo, child exited with code " + code));
 				self.emit('exit', code, signal);
 			});
-			child.on('exit', function (code, signal) {
+			self.child.on('exit', function (code, signal) {
 				if (promise.isPending)
 					reject(new Error("Mongo child exited with code " + code));
 				self.emit('exit', code, signal);
 			});
 			readline.createInterface({
-				input: child.stdout,
+				input: self.child.stdout,
 				terminal: false
 			}).on("line", function (line) {
 				if (promise.isPending) {
@@ -326,7 +349,7 @@ RapidMango.prototype.start = function start() {
 				self.emit("stdout", line);
 			});
 			readline.createInterface({
-				input: child.stderr,
+				input: self.child.stderr,
 				terminal: false
 			}).on("line", function (line) {
 				self.emit("stderr", line);
@@ -336,17 +359,46 @@ RapidMango.prototype.start = function start() {
 			spawn(process.execPath, [
 					path.resolve(__dirname, "tie-process.js"),
 					process.pid,
-					child.pid
+					self.child.pid
 			], {
 				stdio: 'ignore'
 			});
 		});
 		return promise;
-	});
+	}).bind(this);
 };
 
 RapidMango.prototype.stop = function stop() {
-	child.kill()
-}
+	var self = this;
+	return new Promise(function (resolve, reject) {
+		if (self.child === undefined) {
+			resolve(0);
+			return;
+		}
+		self.child.on('close', function (code) {
+			resolve(code);
+		});
+		self.child.on('error', function (err) {
+			reject(err);
+		});
+		self.child.kill();
+		delete self.child;
+	}).bind(this);
+};
 
+RapidMango.prototype.status = function status() {
+	var result = {
+		status: 'stopped',
+		pid: null,
+	}
+
+	if(this.child && this.child.pid) {
+		result.status = 'started'
+		result.pid = this.child.pid
+	}
+
+	return new Promise(function (resolve) {
+		resolve(result)
+	}).bind(this);
+};
 module.exports = RapidMango;
